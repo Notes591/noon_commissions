@@ -59,7 +59,7 @@ def github_delete_file(path_in_repo: str, commit_msg: str):
     return res
 
 # -----------------------------
-# Utilities (mirror logic from your script)
+# Utilities
 # -----------------------------
 def find_col_like(cols, target):
     if cols is None: return None
@@ -96,7 +96,7 @@ def append_totals(df_table):
     return pd.concat([df_table, pd.DataFrame([total_row])], ignore_index=True)
 
 # -----------------------------
-# Sidebar: upload / choose / delete
+# Sidebar
 # -----------------------------
 st.sidebar.title("📁 إدارة الملفات (GitHub)")
 st.sidebar.markdown("رفع ملف Excel/CSV → يخزن في `data/` داخل الريبو. اختر ملفًا لتحليله.")
@@ -117,15 +117,11 @@ if sel_file and st.sidebar.button("🗑️ حذف الملف من GitHub"):
     res = github_delete_file(f"data/{sel_file}", f"Delete {sel_file}")
     if res and res.status_code == 200:
         st.sidebar.success("✔️ تم الحذف")
-        files = github_list_dir("data")
     else:
         st.sidebar.error("❌ فشل الحذف")
 
-st.sidebar.markdown("---")
-st.sidebar.info("تأكد أن التوكن يحتوي صلاحيات repo:contents (write)")
-
 # -----------------------------
-# Load selected file from GitHub
+# Load file with CSV + Excel safe reader
 # -----------------------------
 if not sel_file:
     st.info("اختر ملف من الشريط الجانبي (data/) أو ارفعه الآن.")
@@ -137,17 +133,21 @@ if not raw or "content" not in raw:
     st.stop()
 
 file_bytes = base64.b64decode(raw["content"])
-try:
-    df = pd.read_excel(BytesIO(file_bytes))
-except Exception:
-    df = pd.read_csv(BytesIO(file_bytes))
 
-# keep original df for reference
+# 🔥 هنا حل EmptyDataError بالكامل
+try:
+    if sel_file.lower().endswith(".csv"):
+        df = pd.read_csv(BytesIO(file_bytes))
+    else:
+        df = pd.read_excel(BytesIO(file_bytes))
+except Exception as e:
+    st.error(f"⚠️ خطأ أثناء قراءة الملف:\n{e}")
+    st.stop()
+
 orig_df = df.copy()
 df.columns = [str(c).strip() for c in df.columns]
-
 # -----------------------------
-# Detect columns exactly like your script
+# Detect columns exactly like original script
 # -----------------------------
 awb_col = find_col_like(df.columns, "awb_nr") or ( [c for c in df.columns if "AWB" in c.upper() or "TRACK" in c.upper()][0] if any("AWB" in c.upper() or "TRACK" in c.upper() for c in df.columns) else df.columns[0] )
 order_col = find_col_like(df.columns, "order_nr") or ( [c for c in df.columns if "ORDER" in c.upper()][0] if any("ORDER" in c.upper() for c in df.columns) else df.columns[0] )
@@ -180,10 +180,17 @@ if fee_directship_outbound_col is None:
 # date & partner
 date_col = find_col_like(df.columns, "ordered_date") or find_col_like(df.columns, "order_date") or find_col_like(df.columns, "date")
 if date_col:
-    df[date_col] = pd.to_datetime(df[date_col], errors="coerce").dt.date
+    try:
+        df[date_col] = pd.to_datetime(df[date_col], errors="coerce").dt.date
+    except Exception:
+        pass
+
 id_partner_col = find_col_like(df.columns, "id_partner") or find_col_like(df.columns, "partner_id")
 if id_partner_col:
-    df[id_partner_col] = pd.to_numeric(df[id_partner_col], errors="coerce").astype("Int64")
+    try:
+        df[id_partner_col] = pd.to_numeric(df[id_partner_col], errors="coerce").astype("Int64")
+    except Exception:
+        pass
 
 ensure_col(df, "total_payment", 0.0)
 
@@ -369,7 +376,7 @@ with tabs[1]:
         with pd.ExcelWriter(tmp, engine="openpyxl") as writer:
             fbn_displayed.to_excel(writer, sheet_name="FBN", index=False)
         tmp.seek(0)
-        st.download_button("⬇️ تحميل FBN.xlsx", tmp.getvalue(), file_name="FBN.xlsx", mime="application/vnd.openxmlformats-officedocument-spreadsheetml.sheet")
+        st.download_button("⬇️ تحميل FBN.xlsx", tmp.getvalue(), file_name="FBN.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 with tabs[2]:
     st.subheader("طلبات OTHER (Noon Instant)")
@@ -385,7 +392,7 @@ with tabs[2]:
         with pd.ExcelWriter(tmp, engine="openpyxl") as writer:
             other_displayed.to_excel(writer, sheet_name="OTHER", index=False)
         tmp.seek(0)
-        st.download_button("⬇️ تحميل OTHER.xlsx", tmp.getvalue(), file_name="OTHER.xlsx", mime="application/vnd.openxmlformats-officedocument-spreadsheetml.sheet")
+        st.download_button("⬇️ تحميل OTHER.xlsx", tmp.getvalue(), file_name="OTHER.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 # -----------------------------
 # Download combined & save to GitHub
@@ -473,4 +480,3 @@ if st.button("📊 احسب للمجموعة"):
     st.success(f"📊 إجمالي السجلات: {total_orders} | إجمالي تكرارات SKU: {total_sku_count} | إجمالي العمولة: {round(total_af,2)} | إجمالي التوصيل: {round(total_delivery,2)} | إجمالي الصافي: {round(total_net,2)}")
 
 st.info("ملاحظة: الصور اختيارية — إن لم توجد لن يتوقف التطبيق. أضف الصور لاحقًا إلى images/ داخل الريبو.")
-
