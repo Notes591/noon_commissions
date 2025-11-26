@@ -1,6 +1,7 @@
 streamlit>=1.24
 pandas
-requests
 openpyxl
-Pillow
+xlrd
+requests
 streamlit-aggrid
+Pillow

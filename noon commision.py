@@ -5,14 +5,14 @@ import pandas as pd
 import base64
 import requests
 from io import BytesIO
-import os
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode
 from PIL import Image
+import os
 
-st.set_page_config(page_title="Noon Commissions — AgGrid + GitHub", layout="wide")
+st.set_page_config(page_title="Noon Commissions — Full", layout="wide")
 
 # -----------------------------
-# GitHub settings (Streamlit secrets)
+# Read GitHub secrets
 # -----------------------------
 try:
     GITHUB_TOKEN = st.secrets["GITHUB_TOKEN"]
@@ -25,7 +25,7 @@ except Exception:
     st.stop()
 
 # -----------------------------
-# GitHub helpers
+# GitHub helpers (upload/list/get/delete)
 # -----------------------------
 def github_upload_bytes(path_in_repo: str, content_bytes: bytes, commit_msg: str):
     url = f"{API_BASE}/{path_in_repo}"
@@ -59,10 +59,11 @@ def github_delete_file(path_in_repo: str, commit_msg: str):
     return res
 
 # -----------------------------
-# Utilities
+# Utility functions (mirror original logic)
 # -----------------------------
 def find_col_like(cols, target):
-    if cols is None: return None
+    if cols is None:
+        return None
     t = str(target).strip().upper()
     for c in cols:
         if str(c).strip().upper() == t:
@@ -84,47 +85,41 @@ def ensure_col(df, col, default=0.0):
     if col not in df.columns:
         df[col] = default
 
-def append_totals(df_table):
-    if df_table.empty:
-        return df_table
-    numeric_cols = df_table.select_dtypes(include=['number']).columns
-    totals = df_table[numeric_cols].sum()
-    total_row = {col: "" for col in df_table.columns}
-    for col in numeric_cols:
-        total_row[col] = totals[col]
-    total_row[list(df_table.columns)[0]] = "الإجمالي"
-    return pd.concat([df_table, pd.DataFrame([total_row])], ignore_index=True)
-
 # -----------------------------
-# Sidebar
+# Sidebar (Upload / List / Delete)
 # -----------------------------
-st.sidebar.title("📁 إدارة الملفات (GitHub)")
-st.sidebar.markdown("رفع ملف Excel/CSV → يخزن في `data/` داخل الريبو. اختر ملفًا لتحليله.")
+st.sidebar.title("📁 GitHub File Storage")
+st.sidebar.markdown("ارفع ملف Excel/CSV وسيُخزن في `data/` داخل الريبو. اختر ملفًا من الريبو للتحليل أو احذفه.")
 
-uploaded = st.sidebar.file_uploader("ارفع ملف Excel/CSV", type=["xlsx","xls","csv"])
+uploaded = st.sidebar.file_uploader("📤 ارفع ملف Excel/CSV", type=["xlsx","xls","csv"])
 if uploaded:
+    st.sidebar.write("📄:", uploaded.name)
     if st.sidebar.button("🚀 رفع + Commit إلى GitHub"):
         res = github_upload_bytes(f"data/{uploaded.name}", uploaded.read(), f"Upload {uploaded.name}")
         if res.status_code in (200,201):
             st.sidebar.success("✔️ تم الرفع والحفظ في GitHub")
         else:
-            st.sidebar.error(f"فشل الرفع: {res.status_code} - {res.text}")
+            st.sidebar.error(f"❌ فشل الرفع: {res.status_code} - {res.text}")
 
 st.sidebar.markdown("---")
 files = github_list_dir("data")
-sel_file = st.sidebar.selectbox("اختر ملف من data/", files) if files else None
+sel_file = st.sidebar.selectbox("اختر ملف من data/ (من الريبو)", files) if files else None
 if sel_file and st.sidebar.button("🗑️ حذف الملف من GitHub"):
     res = github_delete_file(f"data/{sel_file}", f"Delete {sel_file}")
     if res and res.status_code == 200:
         st.sidebar.success("✔️ تم الحذف")
+        files = github_list_dir("data")
     else:
-        st.sidebar.error("❌ فشل الحذف")
+        st.sidebar.error(f"❌ فشل الحذف: {res.status_code if res else 'no_response'}")
+
+st.sidebar.markdown("---")
+st.sidebar.info("تأكد من أن الـ GITHUB_TOKEN يملك صلاحيات repo:contents (write)")
 
 # -----------------------------
-# Load file with CSV + Excel safe reader
+# Load selected file (safe reader)
 # -----------------------------
 if not sel_file:
-    st.info("اختر ملف من الشريط الجانبي (data/) أو ارفعه الآن.")
+    st.info("اختر ملف من الشريط الجانبي أو ارفعه الآن.")
     st.stop()
 
 raw = github_get_file(f"data/{sel_file}")
@@ -134,28 +129,35 @@ if not raw or "content" not in raw:
 
 file_bytes = base64.b64decode(raw["content"])
 
-# 🔥 هنا حل EmptyDataError بالكامل
 try:
-    if sel_file.lower().endswith(".csv"):
+    fname = sel_file.lower()
+    if fname.endswith(".csv"):
         df = pd.read_csv(BytesIO(file_bytes))
+    elif fname.endswith(".xlsx"):
+        df = pd.read_excel(BytesIO(file_bytes), engine="openpyxl")
+    elif fname.endswith(".xls"):
+        # xlrd may be required in requirements
+        df = pd.read_excel(BytesIO(file_bytes), engine="xlrd")
     else:
-        df = pd.read_excel(BytesIO(file_bytes))
+        st.error("❗️ امتداد غير مدعوم — استخدم CSV / XLS / XLSX")
+        st.stop()
 except Exception as e:
-    st.error(f"⚠️ خطأ أثناء قراءة الملف:\n{e}")
+    st.error(f"⚠️ خطأ أثناء قراءة الملف: {e}")
     st.stop()
 
 orig_df = df.copy()
 df.columns = [str(c).strip() for c in df.columns]
+
 # -----------------------------
-# Detect columns exactly like original script
+# Detect columns like original code
 # -----------------------------
-awb_col = find_col_like(df.columns, "awb_nr") or ( [c for c in df.columns if "AWB" in c.upper() or "TRACK" in c.upper()][0] if any("AWB" in c.upper() or "TRACK" in c.upper() for c in df.columns) else df.columns[0] )
-order_col = find_col_like(df.columns, "order_nr") or ( [c for c in df.columns if "ORDER" in c.upper()][0] if any("ORDER" in c.upper() for c in df.columns) else df.columns[0] )
+awb_col = find_col_like(df.columns, "awb_nr") or ([c for c in df.columns if "AWB" in c.upper() or "TRACK" in c.upper()][0] if any("AWB" in c.upper() or "TRACK" in c.upper() for c in df.columns) else df.columns[0])
+order_col = find_col_like(df.columns, "order_nr") or ([c for c in df.columns if "ORDER" in c.upper()][0] if any("ORDER" in c.upper() for c in df.columns) else df.columns[0])
 marketplace_col = find_col_like(df.columns, "marketplace")
 if marketplace_col is None:
     df["marketplace"] = ""
     marketplace_col = "marketplace"
-sku_col = find_col_like(df.columns, "sku") or ( [c for c in df.columns if "SKU" in c.upper() or "ITEM" in c.upper() or "PRODUCT" in c.upper()][0] if any("SKU" in c.upper() or "ITEM" in c.upper() or "PRODUCT" in c.upper() for c in df.columns) else df.columns[-1] )
+sku_col = find_col_like(df.columns, "sku") or ([c for c in df.columns if "SKU" in c.upper() or "ITEM" in c.upper() or "PRODUCT" in c.upper()][0] if any("SKU" in c.upper() or "ITEM" in c.upper() or "PRODUCT" in c.upper() for c in df.columns) else df.columns[-1])
 fulfillment_col = find_col_like(df.columns, "fulfillment_mode") or find_col_like(df.columns, "fulfillment")
 if fulfillment_col is None:
     df["fulfillment_mode"] = ""
@@ -177,7 +179,7 @@ if fee_directship_outbound_col is None:
     df["fee_directship_outbound"] = 0.0
     fee_directship_outbound_col = "fee_directship_outbound"
 
-# date & partner
+# date & partner handling
 date_col = find_col_like(df.columns, "ordered_date") or find_col_like(df.columns, "order_date") or find_col_like(df.columns, "date")
 if date_col:
     try:
@@ -194,11 +196,13 @@ if id_partner_col:
 
 ensure_col(df, "total_payment", 0.0)
 
-# clean fields
+# -----------------------------
+# Clean and prepare
+# -----------------------------
 df["clean_type"] = df[fulfillment_col].astype(str).str.strip().str.upper()
 df["marketplace_norm"] = df[marketplace_col].astype(str).str.strip().str.lower()
 
-# fix sku-first (AWB)
+# SKU-first mapping per AWB
 sku_first_map = {}
 for _, row in df.iterrows():
     awb = str(row.get(awb_col, "")).strip()
@@ -212,7 +216,7 @@ df["clean_sku"] = df["clean_sku"].astype(str).str.strip().str.upper()
 identifier_like_cols = set([c for c in [awb_col, order_col, sku_col, id_partner_col, date_col] if c])
 
 # -----------------------------
-# Build FBB rows (group by AWB + clean_sku)
+# Build FBB table (grouped)
 # -----------------------------
 fbb_src = df[df["clean_type"].isin(["FBB", "FBP", "NOON"])].copy()
 fbb_rows = []
@@ -246,7 +250,7 @@ if not fbb_src.empty:
 fbb_table = pd.DataFrame(fbb_rows) if fbb_rows else pd.DataFrame(columns=list(df.columns) + ["نوع","نسبة العمولة","سعر بيع تجريبي","الصافي النهائي","الصافي حسب التجريبي"])
 
 # -----------------------------
-# Build FBN table (includes Rocket)
+# Build FBN table
 # -----------------------------
 fbn_src = df[(df["clean_type"] == "FBN") | (df["marketplace_norm"].str.contains("rocket", na=False))].copy()
 fbn_table = fbn_src.copy()
@@ -264,7 +268,7 @@ else:
     fbn_table = pd.DataFrame(columns=list(df.columns) + ["نوع","نسبة العمولة","سعر بيع تجريبي","الصافي النهائي","الصافي حسب التجريبي"])
 
 # -----------------------------
-# Build OTHER (Noon Instant only)
+# Build OTHER table (Noon Instant)
 # -----------------------------
 other_src = df[df[marketplace_col].astype(str).str.strip().str.lower() == "noon instant"].copy()
 other_rows = []
@@ -299,7 +303,7 @@ if not other_src.empty:
 other_table = pd.DataFrame(other_rows) if other_rows else pd.DataFrame(columns=list(df.columns) + ["نوع","نسبة العمولة","سعر بيع تجريبي","الصافي النهائي","الصافي حسب التجريبي"])
 
 # -----------------------------
-# AgGrid display helper
+# AgGrid helpers
 # -----------------------------
 def ordered_columns(df_table):
     cols = list(df_table.columns)
@@ -315,14 +319,13 @@ def aggrid_display(df_table, grid_key):
         st.info("لا توجد بيانات في هذا الجدول.")
         return df_table
     cols = ordered_columns(df_table)
-    # convert numeric columns to numeric dtype for proper grid behavior
+    # prepare numeric types
     for c in df_table.select_dtypes(include='number').columns:
         df_table[c] = pd.to_numeric(df_table[c], errors='coerce')
     gb = GridOptionsBuilder.from_dataframe(df_table[cols])
     gb.configure_default_column(filter=True, sortable=True, resizable=True, editable=False)
     if "سعر بيع تجريبي" in cols:
         gb.configure_column("سعر بيع تجريبي", editable=True, type=["numericColumn","numberColumnFilter"], precision=2)
-    # allow row grouping (user can group using UI)
     gb.configure_grid_options(animateRows=True, enableRangeSelection=True)
     grid_options = gb.build()
     grid_response = AgGrid(
@@ -340,15 +343,14 @@ def aggrid_display(df_table, grid_key):
     return updated
 
 # -----------------------------
-# Main layout: tabs for tables
+# Main UI: Tabs for tables
 # -----------------------------
-st.title("Noon Commissions — Web (AgGrid) — Images in repo optional")
+st.title("Noon Commissions — Web (AgGrid) — Images optional")
 tabs = st.tabs(["FBB (FBB/FBP/NOON)", "FBN (includes Rocket)", "OTHER (Noon Instant)"])
 
 with tabs[0]:
     st.subheader("طلبات FBB")
     fbb_displayed = aggrid_display(fbb_table, "fbb_grid")
-    # recalc trial net on edits
     if not fbb_displayed.empty and "سعر بيع تجريبي" in fbb_displayed.columns:
         for colname in [fee_referral_col, fee_outbound_fbn_col, fee_directship_outbound_col]:
             if colname in fbb_displayed.columns:
@@ -392,10 +394,10 @@ with tabs[2]:
         with pd.ExcelWriter(tmp, engine="openpyxl") as writer:
             other_displayed.to_excel(writer, sheet_name="OTHER", index=False)
         tmp.seek(0)
-        st.download_button("⬇️ تحميل OTHER.xlsx", tmp.getvalue(), file_name="OTHER.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        st.download_button("⬇️ تحميل OTHER.xlsx", tmp.getvalue(), file_name="OTHER.xlsx", mime="application/vnd.openxmlformats-officedocument-spreadsheetml.sheet")
 
 # -----------------------------
-# Download combined & save to GitHub
+# Export combined & save to GitHub
 # -----------------------------
 st.markdown("---")
 st.header("تصدير / حفظ النتائج")
@@ -408,9 +410,9 @@ def excel_bytes(tables: dict):
     out.seek(0)
     return out.getvalue()
 
-fbb_final = fbb_displayed if 'fbb_displayed' in locals() else fbb_table
-fbn_final = fbn_displayed if 'fbn_displayed' in locals() else fbn_table
-other_final = other_displayed if 'other_displayed' in locals() else other_table
+fbb_final = fbb_displayed if 'fbb_displayed' in locals() and not fbb_displayed.empty else fbb_table
+fbn_final = fbn_displayed if 'fbn_displayed' in locals() and not fbn_displayed.empty else fbn_table
+other_final = other_displayed if 'other_displayed' in locals() and not other_displayed.empty else other_table
 
 if st.button("⬇️ تنزيل كل الجداول Excel (محلي)"):
     blob = excel_bytes({"FBB": fbb_final, "FBN": fbn_final, "OTHER": other_final})
@@ -421,19 +423,18 @@ if st.button("💾 حفظ النتائج المعدلة في GitHub (data/modifi
     target_name = f"modified_{sel_file}"
     res = github_upload_bytes(f"data/{target_name}", blob, f"Save modified results for {sel_file}")
     if res.status_code in (200,201):
-        st.success("✔️ تم حفظ الملف المعدل في GitHub (data/{})".format(target_name))
+        st.success(f"✔️ تم حفظ الملف المعدل في GitHub (data/{target_name})")
     else:
         st.error(f"❌ فشل الحفظ: {res.status_code} - {res.text}")
 
 # -----------------------------
-# SKU image preview (images/ in repo). Optional: if no image, show info.
+# SKU image preview (images/ in repo). Optional.
 # -----------------------------
 st.markdown("---")
-st.header("عرض صورة SKU (اختياري) — الصور توضع لاحقًا في repo/images/")
+st.header("عرض صورة SKU (اختياري) — ضع الصور لاحقًا في images/ داخل الريبو")
 
 sku_input = st.text_input("أدخل SKU لعرض الصورة (بدون الامتداد):").strip().upper()
 if sku_input:
-    # try png then jpg
     info = github_get_file(f"images/{sku_input}.png") or github_get_file(f"images/{sku_input}.jpg")
     if info and info.get("content"):
         try:
@@ -442,7 +443,7 @@ if sku_input:
         except Exception as e:
             st.error(f"خطأ عند عرض الصورة: {e}")
     else:
-        st.info("لا توجد صورة لهذا SKU في مجلد images/ داخل الريبو. يمكنك رفعها لاحقًا (ستظهر تلقائيًا).")
+        st.info("لا توجد صورة لهذا SKU في مجلد images/ داخل الريبو. يمكنك رفعها لاحقًا.")
 
 # -----------------------------
 # Custom batch calc (AWB/Order)
@@ -479,4 +480,4 @@ if st.button("📊 احسب للمجموعة"):
         total_sku_count += fbn_subset[sku_col].count()
     st.success(f"📊 إجمالي السجلات: {total_orders} | إجمالي تكرارات SKU: {total_sku_count} | إجمالي العمولة: {round(total_af,2)} | إجمالي التوصيل: {round(total_delivery,2)} | إجمالي الصافي: {round(total_net,2)}")
 
-st.info("ملاحظة: الصور اختيارية — إن لم توجد لن يتوقف التطبيق. أضف الصور لاحقًا إلى images/ داخل الريبو.")
+st.info("ملاحظة: الصور اختيارية — إن لم تُضاف لن يتوقف التطبيق. أضفها لاحقًا في images/ داخل الريبو.")
