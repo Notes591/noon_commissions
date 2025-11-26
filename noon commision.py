@@ -9,10 +9,7 @@ from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode
 from PIL import Image
 import os
 
-st.set_page_config(
-    page_title="Noon Full Commission System",
-    layout="wide"
-)
+st.set_page_config(page_title="Noon Full Commission System", layout="wide")
 
 # ============================================================
 #    GitHub Secrets (Stored in Streamlit Cloud)
@@ -34,118 +31,111 @@ except Exception:
 """)
     st.stop()
 
-
 # ============================================================
 #    GitHub Helper Functions
 # ============================================================
 def gh_upload(path, bytes_data, message):
     url = f"{API_BASE}/{path}"
     encoded = base64.b64encode(bytes_data).decode()
-    payload = {
-        "message": message,
-        "content": encoded,
-        "branch": GITHUB_BRANCH
-    }
-    return requests.put(url, json=payload,
-                        headers={"Authorization": f"token {GITHUB_TOKEN}"})
-
+    payload = {"message": message, "content": encoded, "branch": GITHUB_BRANCH}
+    return requests.put(url, json=payload, headers={"Authorization": f"token {GITHUB_TOKEN}"})
 
 def gh_list(path):
-    res = requests.get(f"{API_BASE}/{path}",
-                       headers={"Authorization": f"token {GITHUB_TOKEN}"})
+    res = requests.get(f"{API_BASE}/{path}", headers={"Authorization": f"token {GITHUB_TOKEN}"})
     if res.status_code == 200:
         return [x["name"] for x in res.json()]
     return []
 
-
 def gh_get(path):
-    res = requests.get(f"{API_BASE}/{path}",
-                       headers={"Authorization": f"token {GITHUB_TOKEN}"})
+    res = requests.get(f"{API_BASE}/{path}", headers={"Authorization": f"token {GITHUB_TOKEN}"})
     if res.status_code == 200:
         return res.json()
     return None
 
-
 def gh_delete(path, msg):
-    file_info = gh_get(path)
-    if not file_info:
+    info = gh_get(path)
+    if not info:
         return None
-    payload = {
-        "message": msg,
-        "sha": file_info["sha"],
-        "branch": GITHUB_BRANCH
-    }
-    return requests.delete(f"{API_BASE}/{path}",
-                           json=payload,
-                           headers={"Authorization": f"token {GITHUB_TOKEN}"})
-
+    payload = {"message": msg, "sha": info["sha"], "branch": GITHUB_BRANCH}
+    return requests.delete(f"{API_BASE}/{path}", json=payload, headers={"Authorization": f"token {GITHUB_TOKEN}"})
 
 # ============================================================
 #     SAFE FILE READER  — يحل مشكلة "File is not a zip file"
 # ============================================================
 def read_file_safely(file_bytes, filename):
+    """
+    Read bytes into a pandas DataFrame.
+    Strategy:
+      - If extension .csv -> pd.read_csv
+      - If extension .xlsx/.xls -> try pd.read_excel(engine=openpyxl) then fallback to pd.read_csv
+      - Else try pd.read_csv as fallback
+    Note: do NOT use unsupported args like errors="ignore" in read_csv to keep compatibility.
+    """
     from io import BytesIO
-    name = filename.lower()
+    name = filename.lower().strip()
 
-    # CSV أولًا
+    # CSV first
     if name.endswith(".csv"):
-        return pd.read_csv(BytesIO(file_bytes),
-                           encoding="utf-8",
-                           errors="ignore")
+        return pd.read_csv(BytesIO(file_bytes), encoding="utf-8")
 
-    # Excel
+    # Excel: try openpyxl first, then fallback to csv
     if name.endswith(".xlsx") or name.endswith(".xls"):
         try:
             return pd.read_excel(BytesIO(file_bytes), engine="openpyxl")
         except Exception:
+            # fallback: maybe it's actually CSV with .xlsx extension
             try:
-                return pd.read_csv(BytesIO(file_bytes),
-                                   encoding="utf-8",
-                                   errors="ignore")
+                return pd.read_csv(BytesIO(file_bytes), encoding="utf-8")
             except Exception as e:
-                raise Exception(f"🚨 الملف Excel لكن غير صالح — {e}")
+                raise Exception(f"⚠️ الملف امتداده Excel لكنه ليس Excel حقيقي أو CSV صالح — {e}")
 
-    # fallback
+    # fallback: try CSV
     try:
-        return pd.read_csv(BytesIO(file_bytes),
-                           encoding="utf-8",
-                           errors="ignore")
-    except:
-        raise Exception("⚠️ غير قادر على قراءة الملف")
-
+        return pd.read_csv(BytesIO(file_bytes), encoding="utf-8")
+    except Exception as e:
+        raise Exception(f"⚠️ غير قادر على قراءة الملف: {e}")
 
 # ============================================================
 # Sidebar — إدارة الملفات
 # ============================================================
-st.sidebar.header("📦 إدارة ملفات المبيعات")
+st.sidebar.header("📦 إدارة ملفات المبيعات (GitHub)")
 
-uploaded = st.sidebar.file_uploader("🟢 ارفع ملف CSV/XLS/XLSX")
+uploaded = st.sidebar.file_uploader("🟢 ارفع ملف CSV / XLSX / XLS")
 
-if uploaded and st.sidebar.button("⬆️ رفع إلى GitHub"):
-    res = gh_upload(
-        f"data/{uploaded.name}",
-        uploaded.read(),
-        f"upload {uploaded.name}"
-    )
-    st.sidebar.success("✔️ تم رفع الملف") if res.status_code in (200, 201) else st.sidebar.error("❌ فشل الرفع")
+if uploaded and st.sidebar.button("⬆️ رفع + Commit إلى GitHub"):
+    res = gh_upload(f"data/{uploaded.name}", uploaded.read(), f"Upload {uploaded.name}")
+    if res.status_code in (200,201):
+        st.sidebar.success("✔️ تم الرفع والحفظ في GitHub")
+    else:
+        st.sidebar.error(f"❌ فشل الرفع: {res.status_code} - {res.text}")
 
+st.sidebar.markdown("---")
 files = gh_list("data")
-selected_file = st.sidebar.selectbox("📁 اختر ملف", files) if files else None
+selected_file = st.sidebar.selectbox("📁 اختر ملف من data/", files) if files else None
+if selected_file and st.sidebar.button("🗑️ حذف الملف من GitHub"):
+    res = gh_delete(f"data/{selected_file}", f"Delete {selected_file}")
+    if res and res.status_code == 200:
+        st.sidebar.success("✔️ تم الحذف")
+        files = gh_list("data")
+    else:
+        st.sidebar.error("❌ فشل الحذف")
 
-if selected_file and st.sidebar.button("🗑️ حذف الملف"):
-    res = gh_delete(f"data/{selected_file}", f"delete {selected_file}")
-    st.sidebar.success("✔️ تم الحذف") if res and res.status_code == 200 else st.sidebar.error("❌ فشل الحذف")
-
+st.sidebar.markdown("---")
+st.sidebar.info("تأكد أن GITHUB_TOKEN يملك صلاحيات repo: contents (write)")
 
 # ============================================================
-# Load + Parse
+# Load selected file (safe reader)
 # ============================================================
 if not selected_file:
-    st.info("اختر ملف من الشريط الجانبي")
+    st.info("اختر ملف من الشريط الجانبي أو ارفعه الآن.")
     st.stop()
 
-raw_data = gh_get(f"data/{selected_file}")
-file_bytes = base64.b64decode(raw_data["content"])
+raw = gh_get(f"data/{selected_file}")
+if not raw or "content" not in raw:
+    st.error("تعذر جلب الملف من GitHub.")
+    st.stop()
+
+file_bytes = base64.b64decode(raw["content"])
 
 try:
     df = read_file_safely(file_bytes, selected_file)
@@ -153,60 +143,25 @@ except Exception as e:
     st.error(f"⚠️ خطأ أثناء قراءة الملف:\n{e}")
     st.stop()
 
-df.columns = [c.strip() for c in df.columns]
+# Normalize columns
+df.columns = [str(c).strip() for c in df.columns]
 orig_df = df.copy()
 
-
 # ============================================================
-#     CORE — عمود SKU + Fulfillment + السعر + البيع
+# Helper functions (mirroring original logic)
 # ============================================================
-def find_col(cols, key):
-    key = key.strip().upper()
+def find_col_like(cols, target):
+    if cols is None:
+        return None
+    t = str(target).strip().upper()
     for c in cols:
-        if str(c).strip().upper() == key:
+        if str(c).strip().upper() == t:
             return c
     for c in cols:
-        if key in str(c).upper():
+        if t in str(c).strip().upper():
             return c
     return None
 
-
-SKU = find_col(df.columns, "sku")
-F_MODE = find_col(df.columns, "fulfillment_mode")
-SALE = find_col(df.columns, "sale_price")
-QTY = find_col(df.columns, "quantity")
-
-
-for c, d in [
-    (SALE, 0),
-    (QTY, 0)
-]:
-    if c and c not in df.columns:
-        df[c] = d
-
-df["sales_value"] = pd.to_numeric(df.get(SALE, 0), errors="coerce") \
-                     * pd.to_numeric(df.get(QTY, 0), errors="coerce")
-
-
-# ============================================================
-# UI — AgGrid
-# ============================================================
-st.subheader("📊 جدول Raw Data")
-gb = GridOptionsBuilder.from_dataframe(df)
-gb.configure_pagination()
-gb.configure_default_column(editable=True, filter=True, sortable=True, groupable=True)
-grid = AgGrid(
-    df,
-    gridOptions=gb.build(),
-    height=450,
-    update_mode=GridUpdateMode.MODEL_CHANGED
-)
-df = grid["data"]
-# ------------------ الجزء الثاني: تجميع الجداول، الحسابات، الـ AgGrid لكل جدول، التصدير، الصور، الحفظ ------------------
-
-# -----------------------------
-# Utility helpers (إذا لم تُعرّف من قبل)
-# -----------------------------
 def sum_numeric(series):
     return pd.to_numeric(series, errors='coerce').fillna(0).sum()
 
@@ -219,46 +174,50 @@ def ensure_col(df_local, col, default=0.0):
     if col not in df_local.columns:
         df_local[col] = default
 
-# -----------------------------
-# اكتشاف أعمدة مهمة (مطابق للنسخة الكبيرة)
-# -----------------------------
-awb_col = find_col(df.columns, "awb_nr") or ([c for c in df.columns if "AWB" in c.upper() or "TRACK" in c.upper()][0] if any("AWB" in c.upper() or "TRACK" in c.upper() for c in df.columns) else df.columns[0])
-order_col = find_col(df.columns, "order_nr") or ([c for c in df.columns if "ORDER" in c.upper()][0] if any("ORDER" in c.upper() for c in df.columns) else df.columns[0])
-marketplace_col = find_col(df.columns, "marketplace")
+# ============================================================
+# Detect columns (keep your naming tolerant)
+# ============================================================
+awb_col = find_col_like(df.columns, "awb_nr") or ([c for c in df.columns if "AWB" in c.upper() or "TRACK" in c.upper()][0] if any("AWB" in c.upper() or "TRACK" in c.upper() for c in df.columns) else df.columns[0])
+order_col = find_col_like(df.columns, "order_nr") or ([c for c in df.columns if "ORDER" in c.upper()][0] if any("ORDER" in c.upper() for c in df.columns) else df.columns[0])
+marketplace_col = find_col_like(df.columns, "marketplace")
 if marketplace_col is None:
     df["marketplace"] = ""
     marketplace_col = "marketplace"
-sku_col = find_col(df.columns, "sku") or ([c for c in df.columns if "SKU" in c.upper() or "ITEM" in c.upper() or "PRODUCT" in c.upper()][0] if any("SKU" in c.upper() or "ITEM" in c.upper() or "PRODUCT" in c.upper() for c in df.columns) else df.columns[-1])
-fulfillment_col = find_col(df.columns, "fulfillment_mode") or find_col(df.columns, "fulfillment")
+sku_col = find_col_like(df.columns, "sku") or ([c for c in df.columns if "SKU" in c.upper() or "ITEM" in c.upper() or "PRODUCT" in c.upper()][0] if any("SKU" in c.upper() or "ITEM" in c.upper() or "PRODUCT" in c.upper() for c in df.columns) else df.columns[-1])
+fulfillment_col = find_col_like(df.columns, "fulfillment_mode") or find_col_like(df.columns, "fulfillment")
 if fulfillment_col is None:
     df["fulfillment_mode"] = ""
     fulfillment_col = "fulfillment_mode"
-base_price_col = find_col(df.columns, "base_price") or find_col(df.columns, "item_price") or find_col(df.columns, "selling_price") or find_col(df.columns, "price") or None
+
+base_price_col = find_col_like(df.columns, "base_price") or find_col_like(df.columns, "item_price") or find_col_like(df.columns, "selling_price") or find_col_like(df.columns, "price")
 if base_price_col is None:
     df["base_price"] = 0.0
     base_price_col = "base_price"
-fee_referral_col = find_col(df.columns, "fee_referral") or find_col(df.columns, "referral_fee") or find_col(df.columns, "commission") or find_col(df.columns, "fee")
+
+fee_referral_col = find_col_like(df.columns, "fee_referral") or find_col_like(df.columns, "referral_fee") or find_col_like(df.columns, "commission") or find_col_like(df.columns, "fee")
 if fee_referral_col is None:
     df["fee_referral"] = 0.0
     fee_referral_col = "fee_referral"
-fee_outbound_fbn_col = find_col(df.columns, "fee_outbound_fbn") or find_col(df.columns, "fbn_outbound_fee") or find_col(df.columns, "fulfillment_outbound_fbn") or None
+
+fee_outbound_fbn_col = find_col_like(df.columns, "fee_outbound_fbn") or find_col_like(df.columns, "fbn_outbound_fee") or find_col_like(df.columns, "fulfillment_outbound_fbn")
 if fee_outbound_fbn_col is None:
     df["fee_outbound_fbn"] = 0.0
     fee_outbound_fbn_col = "fee_outbound_fbn"
-fee_directship_outbound_col = find_col(df.columns, "fee_directship_outbound") or find_col(df.columns, "fbb_outbound_fee") or find_col(df.columns, "directship_outbound") or None
+
+fee_directship_outbound_col = find_col_like(df.columns, "fee_directship_outbound") or find_col_like(df.columns, "fbb_outbound_fee") or find_col_like(df.columns, "directship_outbound")
 if fee_directship_outbound_col is None:
     df["fee_directship_outbound"] = 0.0
     fee_directship_outbound_col = "fee_directship_outbound"
 
-# تاريخ و partner
-date_col = find_col(df.columns, "ordered_date") or find_col(df.columns, "order_date") or find_col(df.columns, "date")
+# date & partner
+date_col = find_col_like(df.columns, "ordered_date") or find_col_like(df.columns, "order_date") or find_col_like(df.columns, "date")
 if date_col:
     try:
         df[date_col] = pd.to_datetime(df[date_col], errors="coerce").dt.date
     except Exception:
         pass
 
-id_partner_col = find_col(df.columns, "id_partner") or find_col(df.columns, "partner_id")
+id_partner_col = find_col_like(df.columns, "id_partner") or find_col_like(df.columns, "partner_id")
 if id_partner_col:
     try:
         df[id_partner_col] = pd.to_numeric(df[id_partner_col], errors="coerce").astype("Int64")
@@ -267,13 +226,13 @@ if id_partner_col:
 
 ensure_col(df, "total_payment", 0.0)
 
-# -----------------------------
-# تنظيف الحقول الأساسية المستخدمة
-# -----------------------------
+# ============================================================
+# Clean and prepare fields
+# ============================================================
 df["clean_type"] = df[fulfillment_col].astype(str).str.strip().str.upper()
 df["marketplace_norm"] = df[marketplace_col].astype(str).str.strip().str.lower()
 
-# map sku-first by AWB (كما في كودك الأصلي)
+# SKU-first mapping per AWB
 sku_first_map = {}
 for _, row in df.iterrows():
     awb = str(row.get(awb_col, "")).strip()
@@ -286,9 +245,9 @@ df["clean_sku"] = df["clean_sku"].astype(str).str.strip().str.upper()
 
 identifier_like_cols = set([c for c in [awb_col, order_col, sku_col, id_partner_col, date_col] if c])
 
-# -----------------------------
+# ============================================================
 # Build FBB grouped table
-# -----------------------------
+# ============================================================
 fbb_src = df[df["clean_type"].isin(["FBB", "FBP", "NOON"])].copy()
 fbb_rows = []
 if not fbb_src.empty:
@@ -320,9 +279,9 @@ if not fbb_src.empty:
         fbb_rows.append(row)
 fbb_table = pd.DataFrame(fbb_rows) if fbb_rows else pd.DataFrame(columns=list(df.columns) + ["نوع","نسبة العمولة","سعر بيع تجريبي","الصافي النهائي","الصافي حسب التجريبي"])
 
-# -----------------------------
+# ============================================================
 # Build FBN table
-# -----------------------------
+# ============================================================
 fbn_src = df[(df["clean_type"] == "FBN") | (df["marketplace_norm"].str.contains("rocket", na=False))].copy()
 fbn_table = fbn_src.copy()
 if not fbn_table.empty:
@@ -338,9 +297,9 @@ if not fbn_table.empty:
 else:
     fbn_table = pd.DataFrame(columns=list(df.columns) + ["نوع","نسبة العمولة","سعر بيع تجريبي","الصافي النهائي","الصافي حسب التجريبي"])
 
-# -----------------------------
+# ============================================================
 # Build OTHER table (Noon Instant)
-# -----------------------------
+# ============================================================
 other_src = df[df[marketplace_col].astype(str).str.strip().str.lower() == "noon instant"].copy()
 other_rows = []
 if not other_src.empty:
@@ -373,9 +332,9 @@ if not other_src.empty:
         other_rows.append(row)
 other_table = pd.DataFrame(other_rows) if other_rows else pd.DataFrame(columns=list(df.columns) + ["نوع","نسبة العمولة","سعر بيع تجريبي","الصافي النهائي","الصافي حسب التجريبي"])
 
-# -----------------------------
-# AgGrid display function for grouped tables
-# -----------------------------
+# ============================================================
+# AgGrid display helper
+# ============================================================
 def ordered_columns(df_table):
     cols = list(df_table.columns)
     extras = ["نوع", "نسبة العمولة", "سعر بيع تجريبي", "الصافي النهائي", "الصافي حسب التجريبي"]
@@ -413,9 +372,9 @@ def aggrid_display(df_table, grid_key):
     updated = pd.DataFrame(grid_response["data"])
     return updated
 
-# -----------------------------
+# ============================================================
 # Main UI: tabs for the 3 tables (FBB / FBN / OTHER)
-# -----------------------------
+# ============================================================
 st.title("نتائج التحليل — FBB / FBN / OTHER")
 tab1, tab2, tab3 = st.tabs(["FBB (FBB/FBP/NOON)", "FBN (يشمل Rocket)", "OTHER (Noon Instant)"])
 
@@ -466,7 +425,7 @@ with tab3:
         with pd.ExcelWriter(tmp, engine="openpyxl") as writer:
             other_displayed.to_excel(writer, sheet_name="OTHER", index=False)
         tmp.seek(0)
-        st.download_button("⬇️ تحميل OTHER.xlsx", tmp.getvalue(), file_name="OTHER.xlsx", mime="application/vnd.openxmlformats-officedocument-spreadsheetml.sheet")
+        st.download_button("⬇️ تحميل OTHER.xlsx", tmp.getvalue(), file_name="OTHER.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 # -----------------------------
 # Export combined & save to GitHub
@@ -507,7 +466,7 @@ st.header("عرض صورة SKU (اختياري) — ضع الصور لاحقًا
 
 sku_input = st.text_input("أدخل SKU لعرض الصورة (بدون الامتداد):").strip().upper()
 if sku_input:
-    info = gh_get(f"images/{sku_input}.png") or gh_get(f"images/{sku_input}.jpg")
+    info = gh_get(f"images/{sku_input}.png") or gh_get(f"images/{sku_input}.jpg") or gh_get(f"images/{sku_input}.jpeg")
     if info and info.get("content"):
         try:
             content = base64.b64decode(info["content"])
